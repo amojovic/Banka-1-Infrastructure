@@ -46,7 +46,7 @@ dirovi su mrtav izvor — NE deploy-uju se). Frontend je Angular SPA (nginx).
 | `notification-service.yaml` | notification-service Deployment + Service (8006) |
 | `saga-orchestrator-service.yaml` | saga-orchestrator Deployment + Service (8095) |
 | `interbank-service.yaml` | interbank-service Deployment + Service (8091 + gRPC 9091) |
-| `frontend.yaml` | frontend Deployment + Service (80) + nginx ConfigMap |
+| `frontend.yaml` | frontend Deployment + Service (80) + nginx ConfigMap + `env-config.js` ConfigMap (prod runtime `apiUrl=''` same-origin; override-uje image default `http://localhost`) |
 | `route.yaml` | Envoy `HTTPRoute` — path routing za `banka-1.radenkovic.rs` (3 objekta zbog 16-rules/objekat limita) |
 | `secrets.yaml.example` + `SECRETS.md` | Secret template + `kubectl create` recepti |
 
