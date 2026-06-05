@@ -1,0 +1,135 @@
+# credit-service (Go) — krediti/loans. Port 8089.
+# DB: logicka baza `credit_db`, owner role `credit` (Crunchy Secret db-pguser-credit).
+# Cita discrete CREDIT_DB_* env. Probe: BARE /health (credit-service-go ima
+# mux.HandleFunc("/health", ...), NE actuator oblike).
+# NAPOMENA: credit-service-go gradi DB URL sa hardkodiranim ?sslmode=disable —
+# radi sa Crunchy-jem (pod-to-pod konekcije unutar klastera su dozvoljene non-TLS,
+# isto kao Banka 2 Spring servisi koji se konektuju bez sslmode parametra).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: credit-service
+  namespace: banka-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: credit-service
+  template:
+    metadata:
+      labels:
+        app: credit-service
+    spec:
+      containers:
+      - image: ghcr.io/raf-si-2025/banka-1-credit-service:latest
+        imagePullPolicy: Always
+        name: credit-service
+        ports:
+        - name: http
+          containerPort: 8089
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8089
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8089
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8089
+          failureThreshold: 30
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        env:
+          - name: SERVER_PORT
+            value: "8089"
+          - name: CREDIT_SERVER_PORT
+            value: "8089"
+          # --- DB (Crunchy db-pguser-credit; baza credit_db) ---
+          - name: CREDIT_DB_HOST
+            value: db-primary.banka-1.svc
+          - name: CREDIT_DB_PORT
+            value: "5432"
+          - name: CREDIT_DB_NAME
+            value: credit_db
+          - name: CREDIT_DB_USER
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-credit
+                key: user
+          - name: CREDIT_DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-credit
+                key: password
+          # --- JWT ---
+          - name: JWT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: app-secrets
+                key: JWT_SECRET
+          - name: SWAGGER_ENABLED
+            value: "false"
+          - name: LIQUIBASE_CONTEXTS
+            value: prod
+          # --- Downstream servisi (legacy SERVICES_* aliasi mapirani na nove servise) ---
+          - name: SERVICES_USER_URL
+            value: http://user-service:8081
+          - name: SERVICES_BANKING_CORE_URL
+            value: http://banking-core-service:8084
+          - name: SERVICES_MARKET_URL
+            value: http://market-service:8085
+          - name: SERVICES_ACCOUNT_URL
+            value: http://banking-core-service:8084
+          - name: SERVICES_VERIFICATION_URL
+            value: http://banking-core-service:8084
+          - name: SERVICES_EXCHANGE_URL
+            value: http://market-service:8085
+          # --- RabbitMQ ---
+          - name: RABBITMQ_HOST
+            value: rabbitmq
+          - name: RABBITMQ_PORT
+            value: "5672"
+          - name: RABBITMQ_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_USER
+          - name: RABBITMQ_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_PASS
+          - name: NOTIFICATION_EXCHANGE
+            value: employee.events
+          - name: NOTIFICATION_CREDIT_ROUTING_KEY
+            value: credit.#
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: credit-service
+  namespace: banka-1
+spec:
+  selector:
+    app: credit-service
+  ports:
+  - name: http
+    port: 8089
+    targetPort: 8089

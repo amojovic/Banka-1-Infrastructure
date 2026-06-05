@@ -1,0 +1,134 @@
+# banking-core-service (Go) — account + card + transaction + transfer + verification.
+# Port 8084. DB: logicka baza `banking_core`, owner role `banking-core`
+# (Crunchy Secret db-pguser-banking-core). Cita discrete BANKING_CORE_DB_* env.
+# Probe: /actuator/health/{liveness,readiness}.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: banking-core-service
+  namespace: banka-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: banking-core-service
+  template:
+    metadata:
+      labels:
+        app: banking-core-service
+    spec:
+      containers:
+      - image: ghcr.io/raf-si-2025/banka-1-banking-core-service:latest
+        imagePullPolicy: Always
+        name: banking-core-service
+        ports:
+        - name: http
+          containerPort: 8084
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8084
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8084
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8084
+          failureThreshold: 30
+          periodSeconds: 5
+        resources:
+          # banking-core sluzi najvise paketa (account+card+tx+transfer+verification)
+          # → veci limit nego ostali Go servisi.
+          requests:
+            cpu: 150m
+            memory: 192Mi
+          limits:
+            cpu: 1000m
+            memory: 768Mi
+        env:
+          - name: SERVER_PORT
+            value: "8084"
+          # --- DB (Crunchy db-pguser-banking-core; baza banking_core) ---
+          - name: BANKING_CORE_DB_HOST
+            value: db-primary.banka-1.svc
+          - name: BANKING_CORE_DB_PORT
+            value: "5432"
+          - name: BANKING_CORE_DB_NAME
+            value: banking_core
+          - name: BANKING_CORE_DB_USER
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-banking-core
+                key: user
+          - name: BANKING_CORE_DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-banking-core
+                key: password
+          # --- JWT ---
+          - name: JWT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: app-secrets
+                key: JWT_SECRET
+          - name: SWAGGER_ENABLED
+            value: "false"
+          - name: LIQUIBASE_CONTEXTS
+            value: prod
+          # Hibernate-style ddl auto u Go migration runneru (auto-create missing tabele).
+          - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+            value: update
+          - name: CARD_CREATION_AUTOMATIC_DEFAULT_LIMIT
+            value: "1000000"
+          - name: CARD_REQUEST_VERIFICATION_EXPIRATION_MINUTES
+            value: "15"
+          # --- RabbitMQ ---
+          - name: RABBITMQ_HOST
+            value: rabbitmq
+          - name: RABBITMQ_PORT
+            value: "5672"
+          - name: RABBITMQ_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_USER
+          - name: RABBITMQ_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_PASS
+          - name: NOTIFICATION_EXCHANGE
+            value: employee.events
+          - name: NOTIFICATION_ROUTING_KEY
+            value: employee.#
+          # --- Downstream servisi ---
+          - name: SERVICES_USER_URL
+            value: http://user-service:8081
+          - name: SERVICES_EXCHANGE_URL
+            value: http://market-service:8085
+          # --- CORS (FE domain na Gateway-u) ---
+          - name: BANKA_SECURITY_CORS_ALLOWED_ORIGINS
+            value: https://banka-1.radenkovic.rs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: banking-core-service
+  namespace: banka-1
+spec:
+  selector:
+    app: banking-core-service
+  ports:
+  - name: http
+    port: 8084
+    targetPort: 8084

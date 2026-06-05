@@ -1,0 +1,132 @@
+# notification-service (Go) — RabbitMQ consumer (employee/client/card/credit/order/
+# tax/otc/verification events) + SMTP sender + mali HTTP server (/health). Port 8006.
+# DB: logicka baza `notification_db`, owner role `notification`
+# (Crunchy Secret db-pguser-notification). Cita POSTGRES_* env za DB (NE *_DB_* prefix).
+# Probe: BARE /health.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: banka-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+      - image: ghcr.io/raf-si-2025/banka-1-notification-service:latest
+        imagePullPolicy: Always
+        name: notification-service
+        ports:
+        - name: http
+          containerPort: 8006
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8006
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8006
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8006
+          failureThreshold: 30
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        env:
+          - name: NOTIFICATION_SERVICE_HOST
+            value: 0.0.0.0
+          - name: NOTIFICATION_SERVICE_PORT
+            value: "8006"
+          - name: SERVER_PORT
+            value: "8006"
+          # --- DB (Crunchy db-pguser-notification; baza notification_db).
+          #     notification-service-go cita POSTGRES_* env za DB konekciju. ---
+          - name: POSTGRES_HOST
+            value: db-primary.banka-1.svc
+          - name: POSTGRES_PORT
+            value: "5432"
+          - name: POSTGRES_DB
+            value: notification_db
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-notification
+                key: user
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-notification
+                key: password
+          # --- RabbitMQ ---
+          - name: RABBITMQ_HOST
+            value: rabbitmq
+          - name: RABBITMQ_PORT
+            value: "5672"
+          - name: RABBITMQ_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_USER
+          - name: RABBITMQ_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_PASS
+          - name: NOTIFICATION_QUEUE
+            value: notification-service-queue
+          - name: NOTIFICATION_EXCHANGE
+            value: employee.events
+          # --- Gmail SMTP (app password iz mail-credentials; prazno = SMTP tihi fail) ---
+          - name: MAIL_HOST
+            value: smtp.gmail.com
+          - name: MAIL_PORT
+            value: "587"
+          - name: MAIL_SMTP_STARTTLS
+            value: "true"
+          - name: MAIL_SMTP_AUTH
+            value: "true"
+          - name: MAIL_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: mail-credentials
+                key: MAIL_USERNAME
+          - name: MAIL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: mail-credentials
+                key: MAIL_PASSWORD
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: banka-1
+spec:
+  selector:
+    app: notification-service
+  ports:
+  - name: http
+    port: 8006
+    targetPort: 8006

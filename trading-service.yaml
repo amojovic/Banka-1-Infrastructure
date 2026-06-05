@@ -1,0 +1,161 @@
+# trading-service (Go) — orderi/portfolio/OTC/fondovi/opcije/margin/tax/dividende.
+# Port 8088 (gRPC 9088). DB: logicka baza `trading`, owner role `trading`
+# (Crunchy Secret db-pguser-trading). Cita discrete TRADING_DB_* env.
+# Probe: /actuator/health/{liveness,readiness}. Go binar runtime za scheduler/saga
+# poslove je vlasnik (Java retired) → svi coexistence gate-ovi su ON (kao u compose-u).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trading-service
+  namespace: banka-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trading-service
+  template:
+    metadata:
+      labels:
+        app: trading-service
+    spec:
+      containers:
+      - image: ghcr.io/raf-si-2025/banka-1-trading-service:latest
+        imagePullPolicy: Always
+        name: trading-service
+        ports:
+        - name: http
+          containerPort: 8088
+        - name: grpc
+          containerPort: 9088
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8088
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8088
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8088
+          failureThreshold: 30
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 150m
+            memory: 192Mi
+          limits:
+            cpu: 1000m
+            memory: 768Mi
+        env:
+          - name: SERVER_PORT
+            value: "8088"
+          - name: GRPC_PORT
+            value: "9088"
+          # --- DB (Crunchy db-pguser-trading; baza trading) ---
+          - name: TRADING_DB_HOST
+            value: db-primary.banka-1.svc
+          - name: TRADING_DB_PORT
+            value: "5432"
+          - name: TRADING_DB_NAME
+            value: trading
+          - name: TRADING_DB_USER
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-trading
+                key: user
+          - name: TRADING_DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-trading
+                key: password
+          # --- JWT ---
+          - name: JWT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: app-secrets
+                key: JWT_SECRET
+          - name: BANKA_SECURITY_ISSUER
+            value: banka1
+          - name: BANKA_SECURITY_CORS_ALLOWED_ORIGINS
+            value: https://banka-1.radenkovic.rs
+          - name: LIQUIBASE_CONTEXTS
+            value: prod
+          - name: BANKA1_ROUTING_NUMBER
+            value: "111"
+          - name: BANKA_TAX_CAPITAL_GAINS_RATE
+            value: "0.15"
+          - name: OTC_CONTRACT_EXPIRATION_NOTIFICATION_DAYS
+            value: "3"
+          # --- Scheduler / saga gate-ovi (Java retired → Go vlasnik svih poslova) ---
+          - name: ORDER_SCHEDULERS_ENABLED
+            value: "true"
+          - name: RECURRING_ORDER_SCHEDULER_ENABLED
+            value: "true"
+          - name: TAX_SCHEDULER_ENABLED
+            value: "true"
+          - name: DIVIDEND_SCHEDULER_ENABLED
+            value: "true"
+          - name: FUND_SAGA_CONSUMERS_ENABLED
+            value: "true"
+          - name: FUND_SNAPSHOT_SCHEDULER_ENABLED
+            value: "true"
+          - name: OTC_SAGA_CONSUMERS_ENABLED
+            value: "true"
+          - name: OTC_SCHEDULERS_ENABLED
+            value: "true"
+          - name: AUDIT_CONSUMER_ENABLED
+            value: "true"
+          # --- RabbitMQ + saga exchange-evi ---
+          - name: RABBITMQ_HOST
+            value: rabbitmq
+          - name: RABBITMQ_PORT
+            value: "5672"
+          - name: RABBITMQ_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_USER
+          - name: RABBITMQ_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_PASS
+          - name: NOTIFICATION_EXCHANGE
+            value: employee.events
+          - name: SAGA_EVENTS_EXCHANGE
+            value: saga.events
+          - name: SAGA_RESULTS_EXCHANGE
+            value: saga.exchange
+          # --- Downstream servisi ---
+          - name: SERVICES_USER_URL
+            value: http://user-service:8081
+          - name: SERVICES_BANKING_CORE_URL
+            value: http://banking-core-service:8084
+          - name: SERVICES_MARKET_URL
+            value: http://market-service:8085
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trading-service
+  namespace: banka-1
+spec:
+  selector:
+    app: trading-service
+  ports:
+  - name: http
+    port: 8088
+    targetPort: 8088
+  - name: grpc
+    port: 9088
+    targetPort: 9088

@@ -1,0 +1,137 @@
+# saga-orchestrator-service (Go) — saga koordinator (2PC/SAGA za fondove + OTC).
+# Port 8095. DB: logicka baza `saga_db`, owner role `saga` (Crunchy Secret db-pguser-saga).
+# Goose migracije se izvrsavaju na startu (MIGRATIONS_PATH=/migrations).
+# Probe: BARE /health (chi r.Get("/health", ...)).
+#
+# Env model (envconfig, prefix SAGA_; nested sub-strukture su DUPLO-prefiksovane):
+#   SAGA_DB_URL (libpq URL — sklapamo iz Crunchy user/pass preko $(VAR) interpolacije),
+#   SAGA_JWT_SECRET (required; PROFILE=prod odbija dev/prazan secret),
+#   SAGA_SAGA_RABBITMQ_URL / SAGA_SAGA_SERVICES_* (double-prefix).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saga-orchestrator-service
+  namespace: banka-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: saga-orchestrator-service
+  template:
+    metadata:
+      labels:
+        app: saga-orchestrator-service
+    spec:
+      containers:
+      - image: ghcr.io/raf-si-2025/banka-1-saga-orchestrator-service:latest
+        imagePullPolicy: Always
+        name: saga-orchestrator-service
+        ports:
+        - name: http
+          containerPort: 8095
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8095
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8095
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8095
+          failureThreshold: 30
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 96Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        env:
+          # --- HTTP server ---
+          - name: SAGA_SERVER_HTTP_PORT
+            value: "8095"
+          - name: SAGA_SERVER_LOG_LEVEL
+            value: info
+          - name: SAGA_SERVER_LOG_JSON
+            value: "true"
+          - name: SAGA_SERVER_MIGRATIONS_PATH
+            value: /migrations
+          # --- Profile (prod = stroga JWT provera) ---
+          - name: SAGA_PROFILE
+            value: prod
+          # --- JWT (S2S izdavanje) ---
+          - name: SAGA_JWT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: app-secrets
+                key: JWT_SECRET
+          - name: SAGA_JWT_ISSUER
+            value: banka1
+          # --- DB (Crunchy db-pguser-saga; baza saga_db). SAGA_DB_URL se sklapa iz
+          #     user/pass preko $(VAR) interpolacije (K8s referencira ranije env-ove). ---
+          - name: SAGA_DB_USER
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-saga
+                key: user
+          - name: SAGA_DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-saga
+                key: password
+          - name: SAGA_DB_URL
+            value: postgres://$(SAGA_DB_USER):$(SAGA_DB_PASSWORD)@db-primary.banka-1.svc:5432/saga_db?sslmode=disable
+          # --- RabbitMQ (double-prefix SAGA_SAGA_RABBITMQ_URL) ---
+          - name: SAGA_RMQ_USER
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_USER
+          - name: SAGA_RMQ_PASS
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_PASS
+          - name: SAGA_SAGA_RABBITMQ_URL
+            value: amqp://$(SAGA_RMQ_USER):$(SAGA_RMQ_PASS)@rabbitmq:5672/
+          # --- Downstream servisi (double-prefix SAGA_SAGA_SERVICES_*) ---
+          - name: SAGA_SAGA_SERVICES_BANKING_CORE_URL
+            value: http://banking-core-service:8084
+          - name: SAGA_SAGA_SERVICES_TRADING_URL
+            value: http://trading-service:8088
+          - name: SAGA_SAGA_SERVICES_MARKET_URL
+            value: http://market-service:8085
+          - name: SAGA_SAGA_SERVICES_TIMEOUT
+            value: 30s
+          # --- Cleanup scheduler (double-prefix SAGA_SAGA_CLEANUP_*) ---
+          - name: SAGA_SAGA_CLEANUP_INTERVAL
+            value: 15m
+          - name: SAGA_SAGA_CLEANUP_STUCK_CUTOFF
+            value: 1h
+          - name: SAGA_SAGA_CLEANUP_IDEMPOTENCY_RETENTION
+            value: 336h
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: saga-orchestrator-service
+  namespace: banka-1
+spec:
+  selector:
+    app: saga-orchestrator-service
+  ports:
+  - name: http
+    port: 8095
+    targetPort: 8095
