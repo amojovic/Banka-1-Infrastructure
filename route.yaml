@@ -1,0 +1,161 @@
+# Envoy Gateway HTTPRoute za banka-1.radenkovic.rs.
+#
+# HTTPRoute spec limit: max 16 rules po objektu. Banka 1 ima ~40 path-pravila pa
+# splitujemo na 3 objekta. Envoy kombinuje sva pravila iz svih HTTPRoute-a koji
+# dele isti parentRef + hostname, pa global longest-prefix-match radi nezavisno od
+# toga u kom je objektu pravilo definisano.
+#
+# Reprodukuje nginx api-gateway/default.conf.template path mapu:
+#   STRIP prefix (URLRewrite ReplacePrefixMatch -> /):  /exchange, /stock, /order, /credit
+#     (nginx je radio `rewrite ^/x/(.*)$ /$1 break`)
+#   Bez rewrite-a (Go controlleri ocekuju bare path): sve ostalo.
+#
+# ASIMETRIJA inter-bank inbound-a (vidi spec): Banka 2 inbound je pod /api, a
+#   Banka 1 inbound je BARE (/interbank, /public-stock, /negotiations, /user/{rn}/{id})
+#   — te bare putanje NEMAJU /api strip; tako Banka 2 stize do Banke 1.
+#
+# NAPOMENA o /user/{rn}/{id}: nginx je koristio regex ^/user/[0-9]+/[...]+$.
+#   Gateway API v1 standardni match nema regex, pa koristimo PathPrefix /user/
+#   (ruta na interbank-service). To je sira nego nginx regex; ako neki drugi servis
+#   ikad dobije /user/* path, izdvojiti ga eksplicitnim Exact/prefix pravilom ispred.
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: banka-1-trading
+  namespace: banka-1
+spec:
+  parentRefs:
+  - name: banka-gw
+    namespace: envoy-gateway-system
+  hostnames:
+  - banka-1.radenkovic.rs
+  rules:
+  # trading-service:8088 — 16 pravila (max limit). /order STRIP-uje prefix; ostalo bez rewrite-a.
+  - matches: [{path: {type: PathPrefix, value: /order}}]
+    filters:
+    - type: URLRewrite
+      urlRewrite: {path: {type: ReplacePrefixMatch, replacePrefixMatch: /}}
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /orders}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /portfolio}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /actuaries}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /tax}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /watchlist}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /alerts}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /audit-log}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /audit}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /recurring-orders}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /dividends}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /otc}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /options}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /funds}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /margin}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+  - matches: [{path: {type: PathPrefix, value: /analytics}}]
+    backendRefs: [{name: trading-service, port: 8088}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: banka-1-core
+  namespace: banka-1
+spec:
+  parentRefs:
+  - name: banka-gw
+    namespace: envoy-gateway-system
+  hostnames:
+  - banka-1.radenkovic.rs
+  rules:
+  # user-service:8081
+  - matches: [{path: {type: PathPrefix, value: /auth}}]
+    backendRefs: [{name: user-service, port: 8081}]
+  - matches: [{path: {type: PathPrefix, value: /employees}}]
+    backendRefs: [{name: user-service, port: 8081}]
+  - matches: [{path: {type: PathPrefix, value: /clients}}]
+    backendRefs: [{name: user-service, port: 8081}]
+  # banking-core-service:8084
+  - matches: [{path: {type: PathPrefix, value: /accounts}}]
+    backendRefs: [{name: banking-core-service, port: 8084}]
+  - matches: [{path: {type: PathPrefix, value: /api/cards}}]
+    backendRefs: [{name: banking-core-service, port: 8084}]
+  - matches: [{path: {type: PathPrefix, value: /transactions}}]
+    backendRefs: [{name: banking-core-service, port: 8084}]
+  - matches: [{path: {type: PathPrefix, value: /transfers}}]
+    backendRefs: [{name: banking-core-service, port: 8084}]
+  - matches: [{path: {type: PathPrefix, value: /verification}}]
+    backendRefs: [{name: banking-core-service, port: 8084}]
+  - matches: [{path: {type: PathPrefix, value: /payment-recipients}}]
+    backendRefs: [{name: banking-core-service, port: 8084}]
+  # credit-service:8089 — /credit STRIP-uje prefix; /api/loans bez rewrite-a.
+  - matches: [{path: {type: PathPrefix, value: /credit}}]
+    filters:
+    - type: URLRewrite
+      urlRewrite: {path: {type: ReplacePrefixMatch, replacePrefixMatch: /}}
+    backendRefs: [{name: credit-service, port: 8089}]
+  - matches: [{path: {type: PathPrefix, value: /api/loans}}]
+    backendRefs: [{name: credit-service, port: 8089}]
+  # notification-service:8006
+  - matches: [{path: {type: PathPrefix, value: /notifications}}]
+    backendRefs: [{name: notification-service, port: 8006}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: banka-1-market-interbank
+  namespace: banka-1
+spec:
+  parentRefs:
+  - name: banka-gw
+    namespace: envoy-gateway-system
+  hostnames:
+  - banka-1.radenkovic.rs
+  rules:
+  # market-service:8085 — /exchange + /stock STRIP-uju prefix; /stocks, /price-alerts, /watchlists bez rewrite-a.
+  - matches: [{path: {type: PathPrefix, value: /exchange}}]
+    filters:
+    - type: URLRewrite
+      urlRewrite: {path: {type: ReplacePrefixMatch, replacePrefixMatch: /}}
+    backendRefs: [{name: market-service, port: 8085}]
+  - matches: [{path: {type: PathPrefix, value: /stock}}]
+    filters:
+    - type: URLRewrite
+      urlRewrite: {path: {type: ReplacePrefixMatch, replacePrefixMatch: /}}
+    backendRefs: [{name: market-service, port: 8085}]
+  - matches: [{path: {type: PathPrefix, value: /stocks}}]
+    backendRefs: [{name: market-service, port: 8085}]
+  - matches: [{path: {type: PathPrefix, value: /price-alerts}}]
+    backendRefs: [{name: market-service, port: 8085}]
+  - matches: [{path: {type: PathPrefix, value: /watchlists}}]
+    backendRefs: [{name: market-service, port: 8085}]
+  # saga-orchestrator-service:8095 — bez rewrite-a (chi router ocekuje /saga prefiks).
+  - matches: [{path: {type: PathPrefix, value: /saga}}]
+    backendRefs: [{name: saga-orchestrator-service, port: 8095}]
+  # interbank-service:8091 — /api/interbank (Banka 1 outbound API) + BARE inbound
+  # putanje (Banka 2 -> Banka 1, bez /api strip-a). Sve bez rewrite-a.
+  - matches: [{path: {type: PathPrefix, value: /api/interbank}}]
+    backendRefs: [{name: interbank-service, port: 8091}]
+  - matches: [{path: {type: PathPrefix, value: /interbank}}]
+    backendRefs: [{name: interbank-service, port: 8091}]
+  - matches: [{path: {type: PathPrefix, value: /public-stock}}]
+    backendRefs: [{name: interbank-service, port: 8091}]
+  - matches: [{path: {type: PathPrefix, value: /negotiations}}]
+    backendRefs: [{name: interbank-service, port: 8091}]
+  - matches: [{path: {type: PathPrefix, value: /user/}}]
+    backendRefs: [{name: interbank-service, port: 8091}]
+  # SPA catch-all — sve sto nije API path (HTML/CSS/JS + Angular Router rute) -> frontend.
+  - matches: [{path: {type: PathPrefix, value: /}}]
+    backendRefs: [{name: frontend, port: 80}]

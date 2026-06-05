@@ -1,0 +1,121 @@
+# Crunchy PostgresCluster za Banka 1 — JEDAN fizicki Postgres cluster, vise
+# logickih baza (jedna po servisu, kao sto setup/init-db.sh kreira u docker-compose-u).
+#
+# MAPIRANJE (Crunchy `users:` ime  ->  vlasnistvo baze  ->  servis koji je koristi):
+#   user-service       -> db `user_service`      -> user-service-go
+#   banking-core       -> db `banking_core`      -> banking-core-service-go
+#   market-service     -> db `market_service`    -> market-service-go
+#   trading            -> db `trading`           -> trading-service-go
+#   credit             -> db `credit_db`         -> credit-service-go
+#   notification       -> db `notification_db`   -> notification-service-go
+#   saga               -> db `saga_db`           -> saga-orchestrator-service
+#   interbank          -> db `interbank_service` -> interbank-service
+#
+# VAZNO — ime Crunchy user-a vs ime baze:
+#   Crunchy generise Secret `db-pguser-<USER>`. K8s resource ime NE sme da sadrzi
+#   '_' (underscore), pa su user imena hifenisana (npr. `user-service`). Logicke
+#   BAZE zadrzavaju underscore imena koja Go servisi ocekuju (USER_SERVICE_DB_NAME=
+#   user_service itd) — Crunchy dozvoljava da se ime user-a i ime baze razlikuju.
+#   Svaki user je NON-SUPERUSER LOGIN role i VLASNIK svoje baze (pun DDL/CREATE na
+#   njoj — dovoljno za Goose/in-app migracije i seed). Least privilege.
+#
+# Secret-i koje operator auto-generise (Deployment-i ih citaju preko secretKeyRef):
+#   db-pguser-user-service, db-pguser-banking-core, db-pguser-market-service,
+#   db-pguser-trading, db-pguser-credit, db-pguser-notification, db-pguser-saga,
+#   db-pguser-interbank
+#   (keys: user, password, dbname, host, port, uri, jdbc-uri, ...)
+#
+# Write endpoint (primary): db-primary.banka-1.svc:5432
+# Read endpoint (replicas): db-replicas.banka-1.svc:5432
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: db
+  namespace: banka-1
+spec:
+  image: registry.developers.crunchydata.com/crunchydata/crunchy-postgres:ubi9-17.9-2610
+  postgresVersion: 17
+  instances:
+    - name: instance1
+      replicas: 3
+      dataVolumeClaimSpec:
+        accessModes:
+        - "ReadWriteOnce"
+        resources:
+          requests:
+            storage: 30Gi
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            podAffinityTerm:
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  postgres-operator.crunchydata.com/cluster: db
+                  postgres-operator.crunchydata.com/instance-set: instance1
+  backups:
+    pgbackrest:
+      image: registry.developers.crunchydata.com/crunchydata/crunchy-pgbackrest:ubi9-2.58.0-2610
+      repos:
+      - name: repo1
+        volume:
+          volumeClaimSpec:
+            accessModes:
+            - "ReadWriteOnce"
+            resources:
+              requests:
+                storage: 30Gi
+  proxy:
+    pgBouncer:
+      replicas: 2
+      image: registry.developers.crunchydata.com/crunchydata/crunchy-pgbouncer:ubi9-1.25-2610
+      resources:
+        limits:
+          cpu: 200m
+          memory: 128Mi
+  # App user-i: NE SUPERUSER (least privilege). Crunchy kreira LOGIN role koji je
+  # VLASNIK svoje navedene baze (`databases:`), pa ima pun CREATE/DDL na njoj —
+  # dovoljno za Goose / in-app migracije + dev-seed. SUPERUSER zaobilazi sve
+  # grant/RLS provere i moze citati druge baze → security rizik na app nalogu.
+  users:
+    - name: user-service
+      databases:
+        - user_service
+      password:
+        type: "AlphaNumeric"
+    - name: banking-core
+      databases:
+        - banking_core
+      password:
+        type: "AlphaNumeric"
+    - name: market-service
+      databases:
+        - market_service
+      password:
+        type: "AlphaNumeric"
+    - name: trading
+      databases:
+        - trading
+      password:
+        type: "AlphaNumeric"
+    - name: credit
+      databases:
+        - credit_db
+      password:
+        type: "AlphaNumeric"
+    - name: notification
+      databases:
+        - notification_db
+      password:
+        type: "AlphaNumeric"
+    - name: saga
+      databases:
+        - saga_db
+      password:
+        type: "AlphaNumeric"
+    - name: interbank
+      databases:
+        - interbank_service
+      password:
+        type: "AlphaNumeric"

@@ -1,0 +1,102 @@
+# InfluxDB 2.x — OHLCV / market price time-series za market-service.
+# StatefulSet (ne Deployment) jer InfluxDB drzi auth + TSM state u /var/lib/influxdb2
+# i treba stable network ID + persistent volume (volumeClaimTemplates).
+#
+# Init `setup` mode se izvrsava SAMO na praznom data dir-u (prvi boot). Org/bucket/
+# token MORAJU da se poklapaju sa STOCK_INFLUX_ORG / STOCK_INFLUX_BUCKET /
+# STOCK_INFLUX_TOKEN u market-service.yaml (inace market-service write fail-uje 401).
+# Org=banka1, bucket=market_data (match compose default-ima).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: influxdb
+  namespace: banka-1
+spec:
+  serviceName: influxdb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: influxdb
+  template:
+    metadata:
+      labels:
+        app: influxdb
+    spec:
+      containers:
+      - name: influxdb
+        image: influxdb:2.7-alpine
+        ports:
+        - name: http
+          containerPort: 8086
+        env:
+        - name: DOCKER_INFLUXDB_INIT_MODE
+          value: setup
+        - name: DOCKER_INFLUXDB_INIT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: influxdb-credentials
+              key: INFLUX_ADMIN_USERNAME
+        - name: DOCKER_INFLUXDB_INIT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: influxdb-credentials
+              key: INFLUX_ADMIN_PASSWORD
+        - name: DOCKER_INFLUXDB_INIT_ORG
+          value: banka1
+        - name: DOCKER_INFLUXDB_INIT_BUCKET
+          value: market_data
+        - name: DOCKER_INFLUXDB_INIT_RETENTION
+          value: 90d
+        # Admin token (min 32 bajta) — koristi se i kao market-service write token
+        # (STOCK_INFLUX_TOKEN). Iz Secret-a `influxdb-credentials`.
+        - name: DOCKER_INFLUXDB_INIT_ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: influxdb-credentials
+              key: INFLUX_ADMIN_TOKEN
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8086
+          initialDelaySeconds: 20
+          periodSeconds: 15
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8086
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/influxdb2
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 30Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: influxdb
+  namespace: banka-1
+spec:
+  selector:
+    app: influxdb
+  ports:
+  - name: http
+    port: 8086
+    targetPort: 8086

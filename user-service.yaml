@@ -1,0 +1,137 @@
+# user-service (Go) — employee + client + auth. Port 8081.
+# DB: logicka baza `user_service`, owner role `user-service` (Crunchy Secret
+# db-pguser-user-service). Cita discrete USER_SERVICE_DB_* env (vidi config.go).
+# Probe: /actuator/health/{liveness,readiness} (go-platform/health mountuje
+# actuator oblike — NE bare /health).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-service
+  namespace: banka-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: user-service
+  template:
+    metadata:
+      labels:
+        app: user-service
+    spec:
+      containers:
+      - image: ghcr.io/raf-si-2025/banka-1-user-service:latest
+        imagePullPolicy: Always
+        name: user-service
+        ports:
+        - name: http
+          containerPort: 8081
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8081
+          failureThreshold: 30
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        env:
+          - name: SERVER_PORT
+            value: "8081"
+          # --- DB (Crunchy db-pguser-user-service; baza user_service) ---
+          - name: USER_SERVICE_DB_HOST
+            value: db-primary.banka-1.svc
+          - name: USER_SERVICE_DB_PORT
+            value: "5432"
+          - name: USER_SERVICE_DB_NAME
+            value: user_service
+          - name: USER_SERVICE_DB_USER
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-user-service
+                key: user
+          - name: USER_SERVICE_DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-user-service
+                key: password
+          # --- JWT (deljen kroz sve servise — verifikuju isti token) ---
+          - name: JWT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: app-secrets
+                key: JWT_SECRET
+          # --- Migracije/seed gate (Liquibase-context semantika) ---
+          - name: LIQUIBASE_CONTEXTS
+            value: prod
+          - name: SWAGGER_ENABLED
+            value: "false"
+          - name: TOKEN_REFRESH_EXPIRATION_DAYS
+            value: "7"
+          - name: ACCOUNT_LOCKOUT_MAX_ATTEMPTS
+            value: "5"
+          - name: ACCOUNT_LOCKOUT_DURATION_MINUTES
+            value: "10"
+          # --- RabbitMQ (publish employee/client events) ---
+          - name: RABBITMQ_HOST
+            value: rabbitmq
+          - name: RABBITMQ_PORT
+            value: "5672"
+          - name: RABBITMQ_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_USER
+          - name: RABBITMQ_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_PASS
+          - name: NOTIFICATION_EXCHANGE
+            value: employee.events
+          # --- Downstream servis ---
+          - name: SERVICES_TRADING_URL
+            value: http://trading-service:8088
+          # --- CORS + deep-link URL-ovi (FE domain na Gateway-u) ---
+          - name: BANKA_SECURITY_CORS_ALLOWED_ORIGINS
+            value: https://banka-1.radenkovic.rs
+          - name: USER_RESET_PASSWORD_URL
+            value: https://banka-1.radenkovic.rs/auth/reset-password?token=
+          - name: USER_ACTIVATE_ACCOUNT_URL
+            value: https://banka-1.radenkovic.rs/auth/activate-account?token=
+          - name: CLIENT_RESET_PASSWORD_URL
+            value: https://banka-1.radenkovic.rs/auth/reset-password?token=
+          - name: CLIENT_ACTIVATE_ACCOUNT_URL
+            value: https://banka-1.radenkovic.rs/auth/activate-client?token=
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: user-service
+  namespace: banka-1
+spec:
+  selector:
+    app: user-service
+  ports:
+  - name: http
+    port: 8081
+    targetPort: 8081

@@ -1,0 +1,148 @@
+# interbank-service (Go) — inter-bank 2PC protokol (Banka 1 <-> Banka 2). HTTP 8091,
+# gRPC 9091. DB: logicka baza `interbank_service`, owner role `interbank`
+# (Crunchy Secret db-pguser-interbank). Goose migracije na startu (/migrations).
+# Probe: BARE /health.
+#
+# Env model (envconfig, prefix INTERBANK_; nested Interbank.* je DUPLO-prefiksovano):
+#   INTERBANK_DB_URL (libpq URL — sklapamo iz Crunchy user/pass preko $(VAR)),
+#   INTERBANK_JWT_SECRET (required),
+#   INTERBANK_INTERBANK_MY_ROUTING_NUMBER=111 / _MY_BANK_DISPLAY_NAME="Banka 1",
+#   INTERBANK_PROFILE=prod (fail-fast ako partner token pocinje sa "dev-" ili je prazan),
+#   INTERBANK_PARTNERS_JSON (jedini env koji loader cita za partnere — JSON []Partner;
+#     iz Secret-a `interbank-partners`. Registruje Banka 2 / routing 222).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: interbank-service
+  namespace: banka-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: interbank-service
+  template:
+    metadata:
+      labels:
+        app: interbank-service
+    spec:
+      containers:
+      - image: ghcr.io/raf-si-2025/banka-1-interbank-service:latest
+        imagePullPolicy: Always
+        name: interbank-service
+        ports:
+        - name: http
+          containerPort: 8091
+        - name: grpc
+          containerPort: 9091
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8091
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8091
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8091
+          failureThreshold: 30
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 96Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        env:
+          # --- HTTP/gRPC server ---
+          - name: INTERBANK_SERVER_HTTP_PORT
+            value: "8091"
+          - name: INTERBANK_SERVER_GRPC_PORT
+            value: "9091"
+          - name: INTERBANK_SERVER_LOG_LEVEL
+            value: info
+          - name: INTERBANK_SERVER_LOG_JSON
+            value: "true"
+          - name: INTERBANK_SERVER_MIGRATIONS_PATH
+            value: /migrations
+          # --- Profile (prod = stroga partner-token provera) ---
+          - name: INTERBANK_PROFILE
+            value: prod
+          # --- JWT (S2S izdavanje + FE token verifikacija) ---
+          - name: INTERBANK_JWT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: app-secrets
+                key: JWT_SECRET
+          - name: INTERBANK_JWT_ISSUER
+            value: banka1
+          # --- Identitet nase banke (DUPLO-prefiks: Config.Interbank.*) ---
+          - name: INTERBANK_INTERBANK_MY_ROUTING_NUMBER
+            value: "111"
+          - name: INTERBANK_INTERBANK_MY_BANK_DISPLAY_NAME
+            value: "Banka 1"
+          - name: INTERBANK_INTERBANK_MOCK_PARTNER_ENABLED
+            value: "false"
+          # --- Partneri (Banka 2 / routing 222) — JEDINI env koji loader cita za
+          #     partnere; iz Secret-a `interbank-partners`. ---
+          - name: INTERBANK_PARTNERS_JSON
+            valueFrom:
+              secretKeyRef:
+                name: interbank-partners
+                key: INTERBANK_PARTNERS_JSON
+          # --- DB (Crunchy db-pguser-interbank; baza interbank_service).
+          #     INTERBANK_DB_URL se sklapa iz user/pass preko $(VAR) interpolacije. ---
+          - name: INTERBANK_DB_USER
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-interbank
+                key: user
+          - name: INTERBANK_DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-interbank
+                key: password
+          - name: INTERBANK_DB_URL
+            value: postgres://$(INTERBANK_DB_USER):$(INTERBANK_DB_PASSWORD)@db-primary.banka-1.svc:5432/interbank_service?sslmode=disable
+          # --- Downstream servisi (DUPLO-prefiks: Config.Interbank.Services.*) ---
+          - name: INTERBANK_INTERBANK_SERVICES_BANKING_CORE_URL
+            value: http://banking-core-service:8084
+          - name: INTERBANK_INTERBANK_SERVICES_TRADING_URL
+            value: http://trading-service:8088
+          - name: INTERBANK_INTERBANK_SERVICES_USER_URL
+            value: http://user-service:8081
+          - name: INTERBANK_INTERBANK_SERVICES_TIMEOUT
+            value: 5s
+          # --- Outbound + retry (DUPLO-prefiks) ---
+          - name: INTERBANK_INTERBANK_OUTBOUND_TIMEOUT
+            value: 60s
+          - name: INTERBANK_INTERBANK_RETRY_INTERVAL
+            value: 2m
+          - name: INTERBANK_INTERBANK_RETRY_MAX_RETRIES
+            value: "5"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: interbank-service
+  namespace: banka-1
+spec:
+  selector:
+    app: interbank-service
+  ports:
+  - name: http
+    port: 8091
+    targetPort: 8091
+  - name: grpc
+    port: 9091
+    targetPort: 9091

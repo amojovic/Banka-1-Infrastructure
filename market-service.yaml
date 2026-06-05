@@ -1,0 +1,159 @@
+# market-service (Go) — stock + exchange/FX. Port 8085 (gRPC 9085).
+# DB: logicka baza `market_service`, owner role `market-service`
+# (Crunchy Secret db-pguser-market-service). Cita discrete MARKET_SERVICE_DB_* env.
+# Koristi InfluxDB (OHLCV) + Redis (price cache). Probe: /actuator/health/{liveness,readiness}.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-service
+  namespace: banka-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: market-service
+  template:
+    metadata:
+      labels:
+        app: market-service
+    spec:
+      containers:
+      - image: ghcr.io/raf-si-2025/banka-1-market-service:latest
+        imagePullPolicy: Always
+        name: market-service
+        ports:
+        - name: http
+          containerPort: 8085
+        - name: grpc
+          containerPort: 9085
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8085
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8085
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8085
+          failureThreshold: 30
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        env:
+          - name: SERVER_PORT
+            value: "8085"
+          - name: GRPC_PORT
+            value: "9085"
+          # --- DB (Crunchy db-pguser-market-service; baza market_service) ---
+          - name: MARKET_SERVICE_DB_HOST
+            value: db-primary.banka-1.svc
+          - name: MARKET_SERVICE_DB_PORT
+            value: "5432"
+          - name: MARKET_SERVICE_DB_NAME
+            value: market_service
+          - name: MARKET_SERVICE_DB_USER
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-market-service
+                key: user
+          - name: MARKET_SERVICE_DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: db-pguser-market-service
+                key: password
+          # --- JWT ---
+          - name: JWT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: app-secrets
+                key: JWT_SECRET
+          - name: SWAGGER_ENABLED
+            value: "false"
+          - name: LIQUIBASE_CONTEXTS
+            value: prod
+          # --- InfluxDB (OHLCV). Org/bucket/token MORAJU da se poklope sa influxdb.yaml ---
+          - name: STOCK_INFLUX_ENABLED
+            value: "true"
+          - name: STOCK_INFLUX_URL
+            value: http://influxdb:8086
+          - name: STOCK_INFLUX_ORG
+            value: banka1
+          - name: STOCK_INFLUX_BUCKET
+            value: market_data
+          - name: STOCK_INFLUX_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: influxdb-credentials
+                key: INFLUX_ADMIN_TOKEN
+          # --- Redis (price feed L2 cache) ---
+          - name: REDIS_HOST
+            value: redis
+          - name: REDIS_PORT
+            value: "6379"
+          - name: STOCK_PRICE_CACHE_TTL_SECONDS
+            value: "15"
+          # --- Eksterni market-data provideri (operater popunjava preko app-secrets) ---
+          - name: STOCK_MARKET_DATA_BASE_URL
+            value: https://www.alphavantage.co
+          - name: ALPHA_VANTAGE_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: app-secrets
+                key: ALPHA_VANTAGE_API_KEY
+          - name: TWELVE_DATA_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: app-secrets
+                key: TWELVE_DATA_API_KEY
+          # --- RabbitMQ ---
+          - name: RABBITMQ_HOST
+            value: rabbitmq
+          - name: RABBITMQ_PORT
+            value: "5672"
+          - name: RABBITMQ_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_USER
+          - name: RABBITMQ_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: rabbitmq-credentials
+                key: RABBITMQ_DEFAULT_PASS
+          - name: NOTIFICATION_EXCHANGE
+            value: employee.events
+          # --- CORS (FE domain na Gateway-u) ---
+          - name: BANKA_SECURITY_CORS_ALLOWED_ORIGINS
+            value: https://banka-1.radenkovic.rs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-service
+  namespace: banka-1
+spec:
+  selector:
+    app: market-service
+  ports:
+  - name: http
+    port: 8085
+    targetPort: 8085
+  - name: grpc
+    port: 9085
+    targetPort: 9085

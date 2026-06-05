@@ -1,0 +1,113 @@
+# frontend (Angular SPA) — node build -> nginx:alpine serving /usr/share/nginx/html.
+# Port 80. Produkcioni environment.ts ima apiUrl='' (same-origin) → browser salje
+# API request-e direktno na Gateway host (banka-1.radenkovic.rs) sa bare path-evima
+# (/auth, /accounts, /order, ...), koje Envoy HTTPRoute (route.yaml) rutira na servise.
+# Zato NEMA /api proxy bloka u nginx-u — samo /healthz (K8s probe) + SPA fallback.
+#
+# ConfigMap override: FE image-ov default.conf je samocsadrzan (nema upstream-e), ali
+# nema /healthz. Mountamo svoju verziju sa /healthz + istom cache/SPA logikom.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx-config
+  namespace: banka-1
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        # Security headers (OWASP).
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "no-referrer" always;
+
+        # K8s liveness/readiness probe target.
+        location = /healthz {
+            access_log off;
+            return 200 'ok';
+            add_header Content-Type text/plain;
+        }
+
+        # Hashed bundles (main.<hash>.js, styles.<hash>.css ...) — immutable, long cache.
+        location ~* \.(js|css|woff2?|svg|png|jpg|jpeg|gif|ico)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            try_files $uri =404;
+        }
+
+        # index.html + SPA fallback — NE kesira se (drzi referencu na trenutne bundle hash-ove).
+        location / {
+            add_header Cache-Control "no-store, no-cache, must-revalidate, max-age=0";
+            add_header Pragma "no-cache";
+            add_header Expires "0";
+            try_files $uri $uri/ /index.html;
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: banka-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - image: ghcr.io/raf-si-2025/banka-1-frontend:latest
+        imagePullPolicy: Always
+        name: frontend
+        ports:
+        - name: http
+          containerPort: 80
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: default.conf
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: frontend-nginx-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: banka-1
+spec:
+  selector:
+    app: frontend
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
