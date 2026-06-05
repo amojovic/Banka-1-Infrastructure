@@ -159,3 +159,55 @@ spec:
   # SPA catch-all — sve sto nije API path (HTML/CSS/JS + Angular Router rute) -> frontend.
   - matches: [{path: {type: PathPrefix, value: /}}]
     backendRefs: [{name: frontend, port: 80}]
+---
+# SPA deep-link fix.
+# Angular koristi PathLocationStrategy, pa su rute stranica prave putanje (/otc, /portfolio,
+# /accounts, ...). One se POKLAPAJU sa bare-path API prefiksima iznad. Na hard refresh /
+# direktan unos URL-a browser radi DOKUMENT navigaciju (`Sec-Fetch-Dest: document`) na npr.
+# /otc, koju Envoy inace rutira na backend servis -> 404.
+#
+# Ova pravila matchuju SAMO dokument-navigacije (NE XHR/fetch — oni salju `Sec-Fetch-Dest: empty`)
+# za prefikse koji se poklapaju, i salju ih na SPA (frontend). Po Gateway API precedence-u, na
+# istoj duzini path-a pobedjuje pravilo sa VISE header-match-eva, pa dokument-nav ide na frontend,
+# dok API XHR pozivi (bez `document`) i dalje idu na backend. Sve ostale SPA rute vec hvata
+# catch-all `/` -> frontend; ovde su samo prefiksi koji se sudaraju sa API rutama.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: banka-1-spa-nav
+  namespace: banka-1
+spec:
+  parentRefs:
+  - name: banka-gw
+    namespace: envoy-gateway-system
+  hostnames:
+  - banka-1.radenkovic.rs
+  rules:
+  - matches: [{path: {type: PathPrefix, value: /otc}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /portfolio}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /orders}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /funds}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /margin}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /recurring-orders}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /audit-log}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /watchlist}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /accounts}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /transfers}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /clients}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /employees}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /exchange}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
+  - matches: [{path: {type: PathPrefix, value: /price-alerts}, headers: [{name: Sec-Fetch-Dest, value: document}]}]
+    backendRefs: [{name: frontend, port: 80}]
