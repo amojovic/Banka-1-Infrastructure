@@ -47,6 +47,26 @@ data:
         }
     }
 ---
+# Runtime API URL override za PROD (banka-1.radenkovic.rs).
+# FE image bake-uje assets/env-config.js sa default-om `apiUrl: 'http://localhost'`
+# (ispravno SAMO za dev docker-compose). U prod-u bi browser zato slao API pozive na
+# http://localhost -> connection refused + mixed-content blok = login (i sve ostalo) puca.
+# Mountamo svoju verziju preko subPath-a (kao i nginx default.conf) i postavljamo
+# apiUrl='' (same-origin): browser salje /auth, /accounts, /order... na banka-1.radenkovic.rs,
+# a Envoy Gateway (route.yaml) ih rutira na servise. environment.ts prod fallback je takodje ''.
+# NAPOMENA: apiUrl mora da se setuje direktno na '' — NE preko `|| 'http://localhost'`,
+# jer je '' falsy pa bi `|| ` vratio localhost.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-env-config
+  namespace: banka-1
+data:
+  env-config.js: |
+    // PROD runtime config (mount-ovan iz ConfigMap-a, override image default-a).
+    window.__BANKA_ENV__ = window.__BANKA_ENV__ || {};
+    window.__BANKA_ENV__.apiUrl = '';
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -73,6 +93,9 @@ spec:
         - name: nginx-config
           mountPath: /etc/nginx/conf.d/default.conf
           subPath: default.conf
+        - name: env-config
+          mountPath: /usr/share/nginx/html/assets/env-config.js
+          subPath: env-config.js
         livenessProbe:
           httpGet:
             path: /healthz
@@ -98,6 +121,9 @@ spec:
       - name: nginx-config
         configMap:
           name: frontend-nginx-config
+      - name: env-config
+        configMap:
+          name: frontend-env-config
 ---
 apiVersion: v1
 kind: Service
